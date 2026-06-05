@@ -87,9 +87,9 @@ if [ -f "data/raw/products.csv" ]; then
   kubectl wait pod/data-loader -n $NS --for=condition=ready --timeout=60s
   kubectl cp data/raw/products.csv $NS/data-loader:/data/raw/products.csv
   kubectl delete pod data-loader -n $NS --ignore-not-found
-  echo "      Data loaded ✓"
+  echo " Data loaded"
 else
-  echo "      WARN: data/raw/products.csv not found — add it manually before running pipeline"
+  echo " WARN: data/raw/products.csv not found — add it manually before running pipeline"
 fi
 
 echo ""
