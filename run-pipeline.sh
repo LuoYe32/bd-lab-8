@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 echo " BD Lab 8 Pipeline "
 
 echo "[1/5] Checking cluster..."
-kubectl get nodes --request-timeout=10s > /dev/null || { echo "ERROR: Start Docker Desktop first."; exit 1; }
+kubectl get nodes --request-timeout=10s > /dev/null || { echo "ERROR: Kind cluster not running. Start with: kind create cluster --name bd-lab-8"; exit 1; }
 echo "      OK"
 
 echo "[2/5] Checking Vault secrets..."

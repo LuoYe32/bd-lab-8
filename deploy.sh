@@ -47,6 +47,19 @@ echo ""
 echo ">>> [7/10] Setting up storage"
 kubectl apply -f k8s/data/processed-pvc.yaml
 kubectl apply -f k8s/qdrant/pvc.yaml
+kubectl apply -f - <<'PVCEOF'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: raw-data-pvc
+  namespace: bd-lab-8
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 500Mi
+PVCEOF
 
 echo ""
 echo ">>> [8/10] Spark RBAC + ConfigMap"
@@ -67,8 +80,18 @@ kind load docker-image bd-lab-8/model:latest --name bd-lab-8
 kind load docker-image bd-lab-8/datamart:latest --name bd-lab-8
 
 echo ""
-echo "✓ Infrastructure ready!"
+echo ">>> [11/11] Loading data into PVC"
+if [ -f "data/raw/products.csv" ]; then
+  kubectl run data-loader -n $NS --restart=Never --image=ubuntu:22.04 \
+    --overrides='{"spec":{"volumes":[{"name":"raw","persistentVolumeClaim":{"claimName":"raw-data-pvc"}}],"containers":[{"name":"data-loader","image":"ubuntu:22.04","command":["sleep","3600"],"volumeMounts":[{"name":"raw","mountPath":"/data/raw"}]}]}}' 2>/dev/null || true
+  kubectl wait pod/data-loader -n $NS --for=condition=ready --timeout=60s
+  kubectl cp data/raw/products.csv $NS/data-loader:/data/raw/products.csv
+  kubectl delete pod data-loader -n $NS --ignore-not-found
+  echo "      Data loaded ✓"
+else
+  echo "      WARN: data/raw/products.csv not found — add it manually before running pipeline"
+fi
+
 echo ""
-echo "Next steps:"
-echo "  1. Load data into PVC:  kubectl cp data/raw/products.csv bd-lab-8/data-loader:/data/raw/products.csv"
-echo "  2. Run pipeline:        ./run-pipeline.sh"
+echo "Infrastructure ready! Run pipeline with:"
+echo "   ./run-pipeline.sh"
