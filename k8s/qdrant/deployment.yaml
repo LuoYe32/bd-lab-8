@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qdrant
+  namespace: bd-lab-8
+  labels:
+    app: qdrant
+    version: "v1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qdrant
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: qdrant
+        version: "v1"
+    spec:
+      containers:
+        - name: qdrant
+          image: qdrant/qdrant:v1.9.0
+          ports:
+            - containerPort: 6333
+              name: http
+            - containerPort: 6334
+              name: grpc
+          env:
+            - name: QDRANT__SERVICE__API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: qdrant-secret
+                  key: QDRANT_API_KEY
+          volumeMounts:
+            - name: storage
+              mountPath: /qdrant/storage
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 6333
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: qdrant-storage-pvc
