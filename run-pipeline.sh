@@ -28,7 +28,10 @@ run_job() {
   kubectl delete job "$name" -n bd-lab-8 --ignore-not-found 2>/dev/null
   kubectl delete pods -n bd-lab-8 -l spark-role=executor --ignore-not-found 2>/dev/null
   kubectl apply -f "$yaml"
-  kubectl wait --for=condition=complete job/"$name" -n bd-lab-8 --timeout=300s
+  until kubectl get job "$name" -n bd-lab-8 \
+    -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null | grep -q "True"; do
+    sleep 5
+  done
   kubectl logs -n bd-lab-8 -l "job-name=$name" --tail=4 2>/dev/null | grep -vE "^26/" || true
   echo "    DONE ✓"
 }
