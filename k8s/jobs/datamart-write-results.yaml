@@ -1,0 +1,35 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: datamart-write-results
+  namespace: bd-lab-8
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      serviceAccountName: spark-sa
+      restartPolicy: Never
+      containers:
+        - name: datamart
+          image: bd-lab-8/datamart:latest
+          imagePullPolicy: Never
+          args: ["write-results"]
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: qdrant-secret
+          volumeMounts:
+            - name: processed-data
+              mountPath: /data/processed
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "1500Mi"
+              cpu: "2"
+      volumes:
+        - name: processed-data
+          persistentVolumeClaim:
+            claimName: processed-data-pvc

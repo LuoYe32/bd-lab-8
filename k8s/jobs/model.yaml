@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clustering-model
+  namespace: bd-lab-8
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: model
+          image: bd-lab-8/model:latest
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: qdrant-secret
+          volumeMounts:
+            - name: processed-data
+              mountPath: /data/processed
+          resources:
+            requests:
+              memory: "1500Mi"
+              cpu: "500m"
+            limits:
+              memory: "5Gi"
+              cpu: "2"
+      volumes:
+        - name: processed-data
+          persistentVolumeClaim:
+            claimName: processed-data-pvc
