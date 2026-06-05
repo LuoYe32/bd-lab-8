@@ -1,0 +1,7 @@
+.idea/
+__pycache__/
+/data/raw/products.csv
+.env
+venv
+/data/processed/
+/data/models/
