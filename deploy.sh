@@ -39,7 +39,7 @@ echo ""
 echo ">>> [6/10] Syncing secrets from Vault to k8s"
 kubectl delete job vault-secret-sync -n $NS --ignore-not-found
 kubectl apply -f k8s/vault/secret-sync-job.yaml
-kubectl wait --for=condition=complete job/vault-secret-sync -n $NS --timeout=60s
+kubectl wait --for=condition=complete job/vault-secret-sync -n $NS --timeout=120s
 echo "Secret synced:"
 kubectl get secret qdrant-secret -n $NS
 
