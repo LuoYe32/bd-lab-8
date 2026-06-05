@@ -5,6 +5,7 @@ metadata:
   namespace: bd-lab-8
 spec:
   backoffLimit: 2
+  ttlSecondsAfterFinished: 300
   template:
     spec:
       serviceAccountName: spark-sa
@@ -28,7 +29,7 @@ spec:
               cpu: "500m"
             limits:
               memory: "1500Mi"
-              cpu: "2"
+              cpu: "1"
       volumes:
         - name: processed-data
           persistentVolumeClaim:

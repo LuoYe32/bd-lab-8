@@ -5,6 +5,7 @@ metadata:
   namespace: bd-lab-8
 spec:
   backoffLimit: 2
+  ttlSecondsAfterFinished: 300
   template:
     spec:
       restartPolicy: Never
@@ -25,8 +26,8 @@ spec:
               memory: "1500Mi"
               cpu: "500m"
             limits:
-              memory: "5Gi"
-              cpu: "2"
+              memory: "2Gi"
+              cpu: "1"
       volumes:
         - name: processed-data
           persistentVolumeClaim:
