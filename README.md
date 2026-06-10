@@ -1,255 +1,238 @@
-# Модель кластеризации на PySpark + Scala Data Mart
+# Кластеризация продуктов: PySpark + Scala Data Mart на Kubernetes
 
-## Описание работы
+## Описание
 
-В рамках работы был использован датасет OpenFoodFacts, содержащий информацию о пищевой ценности продуктов. На основе числовых признаков продуктов была реализована модель кластеризации, позволяющая разбить продукты на группы со схожими характеристиками.
-
-Для организации работы с данными была разработана **Scala-витрина данных (data mart)**, которая берёт на себя всё взаимодействие с Qdrant и предобработку данных. Python-модель работает только с Parquet-файлами и не обращается к хранилищу напрямую.
+Система кластеризации продуктов OpenFoodFacts, полностью развёрнутая в Kubernetes. Пайплайн запускается как последовательность Kubernetes Jobs. Секреты хранятся в HashiCorp Vault. Данные между шагами передаются через PersistentVolumeClaim.
 
 ---
 
-## Используемый стек технологий
+## Стек технологий
 
-- Python 3.11
-- PySpark
-- Apache Spark
-- Scala 2.12 + sbt
-- Qdrant (векторная БД)
-- OkHttp (HTTP-клиент для Qdrant REST API)
-- Pydantic
-- DVC
-- DagsHub S3 Storage
-- Git
+- **Оркестрация**: Kubernetes (Docker Desktop + Kind), kubectl
+- **Вычисления**: Apache Spark, PySpark, Scala 2.12 + sbt
+- **Хранилище**: Qdrant (векторная БД), PersistentVolumeClaim
+- **Секреты**: HashiCorp Vault (dev mode) + k8s Secret sync
+- **Мониторинг ресурсов**: metrics-server (`kubectl top`)
+- **Версионирование данных**: DVC + DagsHub S3
 
 ---
 
 ## Архитектура
 
 ```
-CSV-файл
-   │
-   ▼
-[Data Mart: upload]          ← Scala, spark-submit
-   │  читает CSV, пишет сырые данные в Qdrant
-   ▼
-Qdrant (products_raw)
-   │
-   ▼
-[Data Mart: preprocess]      ← Scala, spark-submit
-   │  читает из Qdrant, очищает данные, пишет Parquet
-   ▼
-preprocessed.parquet
-   │
-   ▼
-[Clustering Pipeline]        ← Python / PySpark
-   │  читает Parquet, обучает K-Means, пишет predictions.parquet
-   ▼
-predictions.parquet
-   │
-   ▼
-[Data Mart: write-results]   ← Scala, spark-submit
-   │  читает Parquet, пишет кластеризованные данные в Qdrant
-   ▼
-Qdrant (products_clustered)
+raw-data-pvc (products.csv)
+        │
+        ▼
+[Job: datamart-upload]          ← Scala / spark-submit local[2]
+        │  читает CSV → пишет в Qdrant (products_raw)
+        ▼
+Qdrant: products_raw
+        │
+        ▼
+[Job: datamart-preprocess]      ← Scala / spark-submit local[2]
+        │  читает Qdrant → очищает → пишет Parquet
+        ▼
+processed-data-pvc (preprocessed.parquet)
+        │
+        ▼
+[Job: clustering-model]         ← Python / PySpark local[2]
+        │  читает Parquet → K-Means → пишет predictions.parquet
+        ▼
+processed-data-pvc (predictions.parquet)
+        │
+        ▼
+[Job: datamart-write-results]   ← Scala / spark-submit local[2]
+        │  читает Parquet → пишет в Qdrant (products_clustered)
+        ▼
+Qdrant: products_clustered
 ```
 
-Каждый шаг — отдельный Spark-контекст. Data mart запускается через `spark-submit` как subprocess из `main.py`, что гарантирует полную изоляцию JVM-сессий.
+Секреты: **Vault** → `vault-secret-sync` Job → k8s Secret `qdrant-secret` → Qdrant pod
 
 ---
 
 ## Структура проекта
 
 ```
-bd-lab-7/
+bd-lab-8/
+│
+├── deploy.sh                        # полный деплой инфраструктуры
+├── run-pipeline.sh                  # запуск пайплайна
+├── port-forward.sh                  # проброс портов Qdrant (6333) и Vault (8200)
+│
+├── Dockerfile.model                 # образ PySpark-модели
+├── Dockerfile.datamart              # образ Scala-витрины
+├── docker/
+│   └── datamart-entrypoint.sh       # spark-submit для витрины
+│
+├── k8s/
+│   ├── 00-namespace.yaml
+│   ├── configmap.yaml
+│   ├── vault/
+│   │   ├── deployment.yaml          # strategy: RollingUpdate
+│   │   ├── service.yaml
+│   │   ├── serviceaccount.yaml
+│   │   ├── vault-rbac.yaml
+│   │   ├── init-job.yaml            # инициализация Vault
+│   │   ├── secret-sync-job.yaml     # синхронизация секрета → k8s Secret
+│   │   └── secret-sync-rbac.yaml
+│   ├── qdrant/
+│   │   ├── deployment.yaml          # strategy: Recreate
+│   │   ├── service.yaml
+│   │   └── pvc.yaml
+│   ├── spark/
+│   │   └── rbac.yaml
+│   ├── data/
+│   │   └── processed-pvc.yaml
+│   └── jobs/
+│       ├── datamart-upload.yaml
+│       ├── datamart-preprocess.yaml
+│       ├── datamart-write-results.yaml
+│       └── model.yaml
 │
 ├── data-mart/                       # Scala data mart (fat JAR)
 │   ├── build.sbt
-│   ├── project/
-│   │   ├── build.properties
-│   │   └── plugins.sbt
-│   └── src/main/
-│       ├── resources/
-│       │   └── application.conf     # конфиг витрины (HOCON)
-│       └── scala/com/datamart/
-│           ├── DataMartApp.scala    # точка входа, роутинг режимов
-│           ├── config/
-│           │   └── DataMartConfig.scala
-│           ├── preprocessing/
-│           │   └── DataPreprocessor.scala
-│           ├── reader/
-│           │   ├── CsvReader.scala
-│           │   └── QdrantReader.scala
-│           └── writer/
-│               └── QdrantWriter.scala
+│   └── src/main/scala/com/datamart/
+│       ├── DataMartApp.scala
+│       ├── config/DataMartConfig.scala
+│       ├── preprocessing/DataPreprocessor.scala
+│       ├── reader/{CsvReader,QdrantReader}.scala
+│       └── writer/QdrantWriter.scala
 │
-├── data/
-│   ├── raw/                         # исходный CSV (не в git)
-│   └── processed/                   # parquet-файлы (не в git)
-│
-├── src/
-│   ├── config/
-│   │   └── config.py
-│   ├── features/
-│   │   └── builder.py
-│   ├── models/
-│   │   └── kmeans_model.py
-│   ├── evaluation/
-│   │   └── evaluator.py
-│   ├── pipeline/
-│   │   └── clustering_pipeline.py
-│   └── utils/
-│       ├── logger.py
-│       └── spark_manager.py
+├── src/                             # Python-модель
+│   ├── config/config.py
+│   ├── features/builder.py
+│   ├── models/kmeans_model.py
+│   ├── evaluation/evaluator.py
+│   ├── pipeline/clustering_pipeline.py
+│   └── utils/{logger,spark_manager}.py
 │
 ├── main.py
 ├── requirements.txt
-└── README.md
+└── data/raw/products.csv            # DVC
 ```
 
 ---
 
-## Витрина данных (Data Mart)
+## Быстрый старт
 
-Витрина написана на Scala и собирается в fat JAR с помощью `sbt assembly`. Запускается через `spark-submit` с тремя режимами:
+### Требования
 
-| Режим | Что делает |
+- Docker Desktop с включённым Kubernetes (Settings → Kubernetes → Enable)
+- kubectl
+- Java 11+, sbt (для сборки Scala JAR)
+
+### Деплой инфраструктуры
+
+```bash
+QDRANT_API_KEY=super-secret-qdrant-key-lab8 ./deploy.sh
+```
+
+Скрипт выполняет:
+1. `docker pull` внешних образов (Vault, Qdrant, Ubuntu)
+2. Создаёт namespace, RBAC, ServiceAccount'ы
+3. Поднимает Vault, инициализирует (KV v2, k8s auth, политики)
+4. Синхронизирует `QDRANT_API_KEY` из Vault в k8s Secret
+5. Создаёт PVC, разворачивает Qdrant
+6. Собирает Docker-образы, загружает в containerd кластера
+7. Загружает `products.csv` в `raw-data-pvc`
+
+### Запуск пайплайна
+
+```bash
+./run-pipeline.sh
+```
+
+### Доступ к UI
+
+```bash
+./port-forward.sh
+# Qdrant: http://localhost:6333/dashboard  (api-key: super-secret-qdrant-key-lab8)
+# Vault:  http://localhost:8200            (token: root)
+```
+
+### Мониторинг
+
+```bash
+kubectl top pods -n bd-lab-8
+kubectl get pods -n bd-lab-8
+```
+
+---
+
+## Инфраструктура Kubernetes
+
+### HashiCorp Vault
+
+- Хранит API-ключ Qdrant в KV v2 (`secret/bd-lab-8/qdrant`)
+- `vault-init` Job — включает движок секретов, настраивает k8s auth
+- `vault-secret-sync` Job — читает секрет из Vault, создаёт k8s Secret `qdrant-secret`
+- Стратегия обновления: **RollingUpdate** (stateless)
+
+### Qdrant
+
+- Данные на PVC `qdrant-storage-pvc` (ReadWriteOnce)
+- API-ключ монтируется из k8s Secret `qdrant-secret`
+- Стратегия обновления: **Recreate** (ReadWriteOnce PVC не допускает двух подов одновременно)
+
+### Kubernetes Jobs
+
+Все шаги пайплайна имеют `ttlSecondsAfterFinished: 300` (автоудаление через 5 минут).
+
+| Job | Образ | Режим Spark |
+|---|---|---|
+| datamart-upload | bd-lab-8/datamart | local[2] |
+| datamart-preprocess | bd-lab-8/datamart | local[2] |
+| clustering-model | bd-lab-8/model | local[2] |
+| datamart-write-results | bd-lab-8/datamart | local[2] |
+
+---
+
+## Оптимизация ресурсов
+
+Лимиты выставлены на основе замеров `kubectl top` во время выполнения пайплайна.
+Формула: `limit = peak_usage / 0.75`
+
+| Job | RAM пик | Лимит RAM | Утилизация |
+|---|---|---|---|
+| datamart-upload | 357 Mi | 400 Mi | 89% |
+| datamart-preprocess | 334 Mi | 400 Mi | 83% |
+| datamart-write-results | 269 Mi | 350 Mi | 77% |
+| clustering-model | 536 Mi | 700 Mi | 76% |
+
+---
+
+## Витрина данных (Scala)
+
+Три режима, запускаются через `spark-submit local[2]`:
+
+| Режим | Действие |
 |---|---|
-| `upload` | Читает CSV, загружает сырые данные в Qdrant (`products_raw`) |
-| `preprocess` | Читает из Qdrant, выполняет предобработку, сохраняет `preprocessed.parquet` |
-| `write-results` | Читает `predictions.parquet`, загружает кластеризованные данные в Qdrant (`products_clustered`) |
+| `upload` | CSV → Qdrant `products_raw` |
+| `preprocess` | Qdrant → предобработка → `preprocessed.parquet` |
+| `write-results` | `predictions.parquet` → Qdrant `products_clustered` |
 
-### Предобработка в витрине
+Взаимодействие с Qdrant через REST API (OkHttp) — официального Java/Scala SDK нет.
 
-- Удаление пропусков
-- Удаление отрицательных значений
-- Удаление базовых выбросов (> 10σ)
-- Удаление выбросов по персентилям (1–99%)
-- Ограничение выборки
-- Добавление поля `energy_tier` (low / medium / high) — структурный признак витрины
-
-### Конфигурация Spark (витрина)
-
-Витрина намеренно ограничена в ресурсах, чтобы не конкурировать с Python-моделью:
-
-- `master = local[2]` — не более 2 ядер
-- `spark.driver.memory = 2g`
-- `spark.executor.memory = 1g`
-- `spark.executor.cores = 1`
-- `spark.cores.max = 2`
-
-Параметры переопределяются через `application.conf` (HOCON).
-
-### Взаимодействие с Qdrant
-
-Витрина обращается к Qdrant напрямую через REST API (OkHttp) — официального Java/Scala SDK у Qdrant нет. Реализованы только нужные операции: scroll, upsert, create/delete collection.
+Предобработка в витрине: удаление пропусков, отрицательных значений, выбросов (>10σ и по персентилям 1–99%), добавление поля `energy_tier`.
 
 ---
 
 ## Датасет
 
-Использовался датасет OpenFoodFacts:
+OpenFoodFacts: https://world.openfoodfacts.org/data
 
-https://world.openfoodfacts.org/data
-
-Полный датасет имеет большой размер (более 13 ГБ в архиве), поэтому была выполнена предварительная обработка данных и ограничение выборки в соответствии с ресурсами локального компьютера.
-
-Для кластеризации использовались следующие признаки:
-
-- `energy_100g`
-- `fat_100g`
-- `carbohydrates_100g`
-- `sugars_100g`
-- `proteins_100g`
-
----
-
-## Этапы pipeline
-
-### 1. Загрузка данных (Data Mart: upload)
-Чтение CSV через Spark, запись сырых данных в Qdrant (`products_raw`).
-
-### 2. Предобработка данных (Data Mart: preprocess)
-Чтение из Qdrant, очистка данных, сохранение в `preprocessed.parquet`.
-
-### 3. Построение признаков (Python)
-- VectorAssembler
-- StandardScaler
-
-### 4. Обучение модели (Python)
-Алгоритм K-Means, параметры:
-- k = 5
-- seed = 51
-
-### 5. Оценка качества (Python)
-Метрика Silhouette Score.
-
-Итоговый результат: **Silhouette Score = 0.7189**
-
-Также выводились:
-- размеры кластеров
-- центры кластеров
-
-### 6. Сохранение результатов (Data Mart: write-results)
-Чтение `predictions.parquet`, загрузка кластеризованных данных в Qdrant (`products_clustered`) с полем `cluster` в payload.
-
----
-
-## Настройка Spark (Python-модель)
-
-- `master = local[*]`
-- `spark.driver.memory = 4g`
-- `spark.executor.memory = 4g`
-- `spark.sql.shuffle.partitions = 8`
-- `spark.serializer = KryoSerializer`
-- `spark.sql.adaptive.enabled = true`
-
----
-
-## Запуск проекта
-
-Установка зависимостей:
+Признаки: `energy_100g`, `fat_100g`, `carbohydrates_100g`, `sugars_100g`, `proteins_100g`.
 
 ```bash
-pip install -r requirements.txt
+# Скачать через DVC
+AWS_ACCESS_KEY_ID=<key> AWS_SECRET_ACCESS_KEY=<secret> dvc pull data/raw/products.csv
 ```
-
-Сборка JAR (выполняется автоматически при первом запуске, если JAR отсутствует):
-
-```bash
-cd data-mart && sbt assembly
-```
-
-Запуск:
-
-```bash
-python -m main
-```
-
-При первом запуске `main.py` автоматически соберёт JAR, если он ещё не существует.
 
 ---
 
-## Версионирование данных
+## Результаты модели
 
-Для хранения больших файлов использовался DVC.
-
-Хранились:
-- обработанные данные
-- обученная модель
-
-В качестве удаленного хранилища использовался DagsHub S3 Storage.
-
----
-
-## Результат работы
-
-В ходе лабораторной работы было разработано Spark-приложение для кластеризации продуктовых данных с архитектурой витрины данных.
-
-Была реализована:
-- Scala data mart с тремя режимами работы (upload / preprocess / write-results)
-- полная изоляция Qdrant I/O в витрине (Python не обращается к Qdrant напрямую)
-- передача данных между Scala и Python через Parquet
-- модульная Python-архитектура для кластеризации
-- обучение модели K-Means и оценка качества
-
-Полученные кластеры позволяют выделить группы продуктов с похожими характеристиками пищевой ценности.
+- Алгоритм: K-Means, k=5, seed=51
+- **Silhouette Score: 0.7189**
+- Результаты записываются в Qdrant коллекцию `products_clustered` с полем `cluster` в payload
