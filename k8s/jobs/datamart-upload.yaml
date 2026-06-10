@@ -28,10 +28,10 @@ spec:
               mountPath: /data/processed
           resources:
             requests:
-              memory: "1Gi"
+              memory: "300Mi"
               cpu: "500m"
             limits:
-              memory: "1500Mi"
+              memory: "400Mi"
               cpu: "1"
       volumes:
         - name: raw-data

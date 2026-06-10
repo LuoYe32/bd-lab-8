@@ -7,6 +7,13 @@ QDRANT_API_KEY=${QDRANT_API_KEY:-local-dev-key}
 echo " Kubernetes deploy"
 
 echo ""
+echo ">>> [0/10] Pre-pulling external images (Docker Desktop shares containerd with k8s)"
+docker pull --platform linux/arm64 hashicorp/vault:1.16
+docker pull --platform linux/arm64 qdrant/qdrant:v1.9.0
+docker pull --platform linux/arm64 ubuntu:22.04
+echo "    Done."
+
+echo ""
 echo ">>> [1/10] Namespace"
 kubectl apply -f k8s/00-namespace.yaml
 
@@ -29,17 +36,24 @@ kubectl apply -f k8s/vault/deployment.yaml
 kubectl apply -f k8s/vault/service.yaml
 kubectl wait --for=condition=available deployment/vault -n $NS --timeout=300s
 
+wait_job() {
+  local name=$1
+  until kubectl get job "$name" -n $NS --no-headers 2>/dev/null | grep -q "1/1"; do
+    sleep 5
+  done
+}
+
 echo ""
 echo ">>> [5/10] Initializing Vault (k8s auth + secrets)"
 kubectl delete job vault-init -n $NS --ignore-not-found
 kubectl apply -f k8s/vault/init-job.yaml
-kubectl wait --for=condition=complete job/vault-init -n $NS --timeout=120s
+wait_job vault-init
 
 echo ""
 echo ">>> [6/10] Syncing secrets from Vault to k8s"
 kubectl delete job vault-secret-sync -n $NS --ignore-not-found
 kubectl apply -f k8s/vault/secret-sync-job.yaml
-kubectl wait --for=condition=complete job/vault-secret-sync -n $NS --timeout=120s
+wait_job vault-secret-sync
 echo "Secret synced:"
 kubectl get secret qdrant-secret -n $NS
 
@@ -73,11 +87,11 @@ kubectl apply -f k8s/qdrant/service.yaml
 kubectl wait --for=condition=available deployment/qdrant -n $NS --timeout=90s
 
 echo ""
-echo ">>> [10/10] Building and loading Docker images into Kind"
+echo ">>> [10/10] Building Docker images and loading into k8s containerd"
 docker build -f Dockerfile.model -t bd-lab-8/model:latest .
 docker build -f Dockerfile.datamart -t bd-lab-8/datamart:latest .
-kind load docker-image bd-lab-8/model:latest --name bd-lab-8
-kind load docker-image bd-lab-8/datamart:latest --name bd-lab-8
+docker save bd-lab-8/model:latest    | docker exec -i desktop-control-plane ctr --namespace=k8s.io images import -
+docker save bd-lab-8/datamart:latest | docker exec -i desktop-control-plane ctr --namespace=k8s.io images import -
 
 echo ""
 echo ">>> [11/11] Loading data into PVC"

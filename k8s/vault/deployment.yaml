@@ -19,6 +19,7 @@ spec:
       containers:
         - name: vault
           image: hashicorp/vault:1.16
+          imagePullPolicy: IfNotPresent
           args:
             - server
             - -dev

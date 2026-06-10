@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 echo " BD Lab 8 Pipeline "
 
 echo "[1/5] Checking cluster..."
-kubectl get nodes --request-timeout=10s > /dev/null || { echo "ERROR: Kind cluster not running. Start with: kind create cluster --name bd-lab-8"; exit 1; }
+kubectl get nodes --request-timeout=10s > /dev/null || { echo "ERROR: Kubernetes not running. Enable in Docker Desktop: Settings → Kubernetes → Enable"; exit 1; }
 echo "      OK"
 
 echo "[2/5] Checking Vault secrets..."
@@ -13,9 +13,9 @@ if ! kubectl get secret qdrant-secret -n bd-lab-8 &>/dev/null; then
   echo "      Re-initializing Vault..."
   kubectl delete job vault-init vault-secret-sync -n bd-lab-8 --ignore-not-found 2>/dev/null
   kubectl apply -f k8s/vault/init-job.yaml
-  kubectl wait --for=condition=complete job/vault-init -n bd-lab-8 --timeout=120s
+  until kubectl get job vault-init -n bd-lab-8 --no-headers 2>/dev/null | grep -q "1/1"; do sleep 5; done
   kubectl apply -f k8s/vault/secret-sync-job.yaml
-  kubectl wait --for=condition=complete job/vault-secret-sync -n bd-lab-8 --timeout=120s
+  until kubectl get job vault-secret-sync -n bd-lab-8 --no-headers 2>/dev/null | grep -q "1/1"; do sleep 5; done
   echo "      Done."
 else
   echo "      OK"
@@ -28,8 +28,10 @@ run_job() {
   kubectl delete job "$name" -n bd-lab-8 --ignore-not-found 2>/dev/null
   kubectl delete pods -n bd-lab-8 -l spark-role=executor --ignore-not-found 2>/dev/null
   kubectl apply -f "$yaml"
-  until kubectl get job "$name" -n bd-lab-8 \
-    -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null | grep -q "True"; do
+  until kubectl get job "$name" -n bd-lab-8 --no-headers 2>/dev/null | grep -q "1/1"; do
+    if kubectl get job "$name" -n bd-lab-8 --no-headers 2>/dev/null | grep -qE "0/1.*BackoffLimitExceeded|Failed"; then
+      echo "ERROR: job $name failed"; kubectl logs -n bd-lab-8 -l "job-name=$name" --tail=20 2>/dev/null; exit 1
+    fi
     sleep 5
   done
   kubectl logs -n bd-lab-8 -l "job-name=$name" --tail=4 2>/dev/null | grep -vE "^26/" || true
